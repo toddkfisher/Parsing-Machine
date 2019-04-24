@@ -1,0 +1,8 @@
+*.fasl
+.backup
+*.dump
+TAGS
+run.txt
+pm
+old
+prototypes.h

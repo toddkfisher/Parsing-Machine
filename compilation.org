@@ -1,0 +1,70 @@
+* Flattening to canonical form (rules should be applied in order shown)
+** flatten(α | β)              → flatten(α) | flatten(β)
+** flatten(α(β | γ))           → flatten(αβ) | flatten(αγ)
+** flatten((α | β)γ)           → flatten(αγ) | flatten(βγ)
+** flatten(αβ)                 → flatten(α)flatten(β)       // where α ≠ γ | δ and β ≠ γ | δ
+** flatten(x:α)                → x:flatten(α)
+** flatten(A)                  → A                          // where A is a rule name
+** flatten("c_0c_1...c_(n-1)") → "c_0c_1...c_(n-1)"
+** flatten(α?)                 → flatten(α)?
+** flatten(α*)                 → flatten(α)*
+** flatten(α+)                 → flatten(α)+
+** flatten(~α)                 → flatten(~α)
+** flatten(A => α)             → A => flatten(α)
+* Naming conventions:
+
+* Compilation rules
+** (compile (ND-CONCAT left right)) -->
+        (compile left)
+        (compile right)
+** (compile (ND-0-OR-MANY expr) -->
+        choice L0
+   L1:
+        (compile expr)
+        partial-commit L1
+   L0:
+** (compile (ND-ORDERED-CHOICE left right)) -->
+        choice L0
+        (compile left)
+        commit L1
+   L0:
+        (compile right)
+   L1:
+** (compile (ND-TEXT "c0c1c2...cn")) -->
+        char c0
+        char c1
+        char c2
+        ...
+        char cn
+** (compile (ND-NOT expr)) -->
+        choice L0
+        (compile expr)
+        commit L1
+
+   L1:
+        fail
+   L0:
+** (compile (ND-CALL-RULE name)) -->
+        call name  ;; the label of a rule name is simply the rule name.
+** (compile (ND-RULE name expr semantic-action)) -->
+   <name>:
+        (compile expr)
+        return
+** (compile (ND-0-OR-1 expr)) -->
+        // α? = (α|)
+        choice L0
+        (compile expr)
+        commit L1
+    L0:
+    L1:
+** (compile (ND-1-OR-MANY expr)) -->
+   L0:
+        (compile expr)
+        choice L1
+        partial-commit L0
+   L1:
+
+
+
+Flattening rules aren't quite right.  Take this example:
+((x|y)z)w = (xz|yz)w
