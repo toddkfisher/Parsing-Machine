@@ -1,4 +1,4 @@
-* Flattening to canonical form (rules should be applied in order shown)
+* Flattening to canonical form (rules should be applied bottom-up in order shown)
 ** flatten(α | β)              → flatten(α) | flatten(β)
 ** flatten(α(β | γ))           → flatten(αβ) | flatten(αγ)
 ** flatten((α | β)γ)           → flatten(αγ) | flatten(βγ)
@@ -9,10 +9,36 @@
 ** flatten(α?)                 → flatten(α)?
 ** flatten(α*)                 → flatten(α)*
 ** flatten(α+)                 → flatten(α)+
-** flatten(~α)                 → flatten(~α)
+** flatten(~α)                 → ~flatten(α)
 ** flatten(A => α)             → A => flatten(α)
-* Naming conventions:
-
+* Alternative strategy to flattening grammar rules (for capture implementation)
+** examples to think about:
+     1. A => X:(α|β)γ                  -- even though γ is out of the scope of capture 'x', it can still invalidate it.
+     2. A => x:α_0 y:β_0 | z:α_1 β_1   -- captures can only be validated when either: (1) a top-level alternative is
+                                          satisfied or (2) an entire rule is satisfied (same things really)
+     3. A => x:(y:α γ | δ z:ε)ρ        -- α failing invalidates capture 'y' but not 'x'.  γ failing invalidates 'y' but
+                                          not 'x'. ε failing never activates capture 'z' but does invalidate capture 'x'.
+                                          ε failing invalidates captures 'z' and 'x'.  If one of the alternatives in parens
+                                          succeeds but ρ fails, then captures 'x' and 'y' (or 'z') are all invalidated.
+     In (1): the "failure scope" of 'x' is the entire RHS
+             the "capture scope" of 'x' is '(α|β)'
+     In (2): the fail scope of 'x' is 'α_0 y:β_0'
+             the capture scope of 'x' is 'α_0'
+             the fail scope of 'y' is 'β_0', its capture scope is also 'β_0'
+             fail scope of z: 'α_1 β_1', capture scope: 'α_1'
+     In (3): fail scope of 'x': '(y:α γ | δ z:ε)ρ' (entire RHS) (really: 'δ z:ε ρ'),
+             capture scope of 'x': '(y:α γ | δ z:ε)'
+             fail scope of 'y': 'α γ ρ', capture scope is '&alpha'
+             fail scope of 'z': 'ε ρ', capture scope is 'ε'
+     So, the fail scope of a particular capture is the string that follows the ':' up to the next '|' in the
+     flattened expression.
+** New opcodes:
+*** begin_capture /capture-slot/
+    /capture slot/ is implicitly placed on the dynamic failure scope list.
+*** end_capture /capture-slot/
+    Does NOT take /capture-slot/ off of the dynamic failure scope list.
+*** leave_fail_scope /capture-slot/
+*** re-enter_fail_scope /capture-slot/
 * Compilation rules
 ** (compile (ND-CONCAT left right)) -->
         (compile left)

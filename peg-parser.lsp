@@ -9,6 +9,10 @@
 (defstruct ND-NOT :expr)
 (defstruct ND-TEXT :text)
 (defstruct ND-CALL-RULE :rule-name)
+(defstruct ND-REENTER-INVALIDATION-SCOPE :capture-names :expr)
+(defstruct ND-LEAVE-INVALIDATION-SCOPE :capture-names :expr)
+
+;;* Parsing
 
 (defmacro simple-token-r (rule-name token-text)
   `(defrule ,rule-name
@@ -51,7 +55,7 @@
 (defrule capture-r
     (and name-tk ":")
   (:destructure (nm colon)
-                (make-ND-CAPTURE :capture-name nm)))
+                nm))
 
 (defrule suffix-op-tk
     (and ws*-r (or "?" "!" "*" "+") ws*-r)
@@ -90,9 +94,13 @@
     (make-ND-CALL-RULE :rule-name nm)))
 
 (defrule simple-factor-r
-    (or call-r
-        text-r
+    (or text-r
+        call-r
         paren-expr-r)
+  (:identity t))
+
+(defrule test-rule-r
+    (+ text-r )
   (:identity t))
 
 (defrule semantic-action-char-r
@@ -138,10 +146,12 @@
                 (text ch*)))
 
 (defrule text-r
-    (and #\'
+    (and ws*-r
+         #\'
          string-with-escapes-r
-         #\')
-  (:destructure (l-quote str r-quote)
+         #\'
+         ws*-r)
+  (:destructure (ws0 l-quote str r-quote ws1)
                 (make-ND-TEXT :text (text str))))
 
 (defrule rule-r
@@ -168,6 +178,8 @@
   (:destructure (ws0 first-char rest-chars ws1)
                 (text first-char rest-chars)))
 
+;;* "Compiler"
+
 (defmacro add-instruction (instruction-list-name single-instr)
   `(setf ,instruction-list-name (append ,instruction-list-name (list ,single-instr))))
 
@@ -185,10 +197,132 @@
   (prog1 (format nil "L~a" *label-idx*)
     (setf *label-idx* (1+ *label-idx*))))
 
+(defmacro vlet* (vars-value* &rest body)
+  (labels ((expand-mv-bindings (vars-value*)
+             (if vars-value*
+                 (let ((var-list (caar vars-value*))
+                       (value (cadar vars-value*)))
+                   (if (null (cdr vars-value*))
+                       `(multiple-value-bind ,var-list ,value ,@body)
+                       `(multiple-value-bind ,var-list ,value ,(expand-mv-bindings (cdr vars-value*))))))))
+    (expand-mv-bindings vars-value*)))
+
+(defun add-invalidation-scopes (root active-capture-names)
+  (if root
+      (typecase root
+        (ND-ORDERED-CHOICE ;;
+         ;;
+         ;; (0) Every capture currently in invalidation scope has that scope suspended on the
+         ;;     left branch of an ordered choice.  Active captures do not get passed down
+         ;;     the left branch.  Active captures do get passed to the right branch since failure of the
+         ;;     right branch means that there are no more alternatives and hence, the entire ordered choice
+         ;;     expression has failed.
+         ;; (1) The captures introduced on the left branch do not have an invalidation scope on
+         ;;     the right branch of ordered choice.
+         ;;
+         (vlet* (((left-root left-branch-capture-set)
+                  (add-invalidation-scopes (ND-ORDERED-CHOICE-left root) nil))
+                 ((right-root new-capture-set)
+                  (add-invalidation-scopes (ND-ORDERED-CHOICE-right root) active-capture-names)))
+                (let ((new-left-root (make-ND-LEAVE-INVALIDATION-SCOPE :capture-names active-capture-names
+                                                                       :expr left-root))
+                      (new-right-root (make-ND-REENTER-INVALIDATION-SCOPE :capture-names active-capture-names
+                                                                          :expr right-root)))
+                  (make-ND-ORDERED-CHOICE :left new-left-root
+                                          :right new-right-root))))
+        (ND-RULE ;;
+         (values root
+                 (add-invalidation-scopes (ND-RULE-expr root)
+                                          active-capture-names)))
+        (ND-NAME ;;
+         (values root
+                 active-capture-names))
+        (ND-CONCAT ;;
+         ;;
+         ;; (0) Captures currently within invalidation scope are passed down the left branch.
+         ;; (1) New captures may enter the current scope from the left branch so we will
+         ;;     receive a (possibly) expanded set of capture names.
+         ;; (2) We also receive a new (possibly modified) ldft branch of this operator.
+         ;; (3) The new capture set from (1) is passed to the right branch and we also receive a (possibly)
+         ;;     even new capture set.
+         ;; (4) We join the new left and right branches with a 'concat' opertor and pass the newly created concat node and
+         ;;     newer capture set back up to the caller.
+         ;;
+         (vlet* (((new-left new-capture-set)
+                  (add-invalidation-scopes (ND-CONCAT-left root) active-capture-names))
+                 ((new-right newer-capture-set)
+                  (add-invalidation-scopes (ND-CONCAT-right root) new-capture-set)))
+                (values (make-ND-CONCAT :left new-left :right new-right)
+                        newer-capture-set)))
+        (ND-CAPTURE ;;
+         (let ((new-capture-set (adjoin (ND-CAPTURE-capture-name root)
+                                        active-capture-names)))
+           ;;
+           ;; (0) After adding the new capture name to the current capture set, we pass the new set down to the
+           ;;     expression being captured.
+           ;; (1) We receive a (possibly) enlarged capture set and a (possibly) modified expression.
+           ;; (2) Join the capture name and new capture expression with a capture node.
+           ;;
+           (vlet* (((new-capture-expr newer-capture-set)
+                    (add-invalidation-scopes (ND-CAPTURE-capture-expr root) new-capture-set)))
+                  (values (make-ND-CAPTURE :capture-name (ND-CAPTURE-capture-name root)
+                                           :capture-expr new-capture-expr)
+                          newer-capture-set))))
+        (ND-0-OR-1  ;;
+         ;;
+         ;; '<expr>?' never invalidates any captures.  Only new captures introduced in <expr> can be invalidated.
+         ;; Therefore, we pass nothing to the expression subordinate to '?'  However, <expr> may introduce new
+         ;; capture names into the invalidation scope so we need to pick those up so that they get passed to
+         ;; the right branch.
+         ;;
+         (vlet* (((new-expr new-capture-set)
+                  (add-invalidation-scopes (make-ND-0-OR-1-expr :expr root) nil)))
+                (values (make-ND-0-OR-1 :expr new-expr)
+                        new-capture-set)))
+        (ND-0-OR-MANY  ;; a* = (| a | aa | aaa | aaaa | ... )
+         ;;
+         ;; The situation with ND-0-OR-MANY is exactly equivalent to ND-0-OR-1
+         ;;
+         (vlet* (((new-expr new-capture-set)
+                  (add-invalidation-scopes (make-ND-0-OR-1-expr :expr root) nil)))
+                (values (make-ND-0-OR-1 :expr new-expr)
+                        new-capture-set)))
+        (ND-1-OR-MANY ;;
+         ;;
+         ;; In 'a+', 'a' must always succeed at least once and therefore it can invalidate any
+         ;; currently active captures.  And, any captures introduced can also be invalidated
+         ;; further down the line.
+         ;;
+         (vlet* (((new-expr new-capture-set)
+                  (add-invalidation-scopes (ND-1-OR-MANY-expr root) active-capture-names)))
+                (make-ND-1-OR-MANY :expr (add-invalidation-scopes new-expr new-capture-set))))
+        (ND-NOT
+         (values root active-capture-names))
+        (ND-TEXT
+         (values root active-capture-names))
+        (ND-CALL-RULE
+         (values root active-capture-names))
+        (ND-REENTER-INVALIDATION-SCOPE  ;; Shouldn't happen
+         (values root active-capture-names))
+        (ND-LEAVE-INVALIDATION-SCOPE ;; Shouldn't happen
+         (values root active-capture-names)))))
+
 (defun peg-compile (root)
   (let ((instruction-list nil))
     (if root
         (typecase root
+          (ND-CAPTURE
+           (add-instruction *instruction-list* (format nil "begin-capture ~a" (ND-CAPTURE-capture-name root)))
+           (peg-compile (ND-CAPTURE-capture-expr root))
+           (add-instruction *instruction-list* (format nil "end-capture ~a" (ND-CAPTURE-capture-name root))))
+          (ND-REENTER-INVALIDATION-SCOPE
+           (loop for capture-name in (ND-REENTER-INVALIDATION-SCOPE-capture-names root)
+              do (add-instruction *instruction-list* (format nil "reenter-invalidation-scope ~a" capture-name)))
+           (peg-compile (ND-REENTER-INVALIDATION-SCOPE-expr root)))
+          (ND-LEAVE-INVALIDATION-SCOPE
+           (loop for capture-name in (ND-LEAVE-INVALIDATION-SCOPE-capture-names root)
+              do (add-instruction *instruction-list* (format nil "leave-invalidation-scope ~a" capture-name)))
+           (peg-compile (ND-LEAVE-INVALIDATION-SCOPE-expr root)))
           (ND-CONCAT
            (progn (peg-compile (ND-CONCAT-left root))
                   (peg-compile (ND-CONCAT-right root))))

@@ -14,8 +14,9 @@ enum OPCODE {
 /* 10 : */ OP_MAKE_CAPTURE_SLOTS,
 /* 11 : */ OP_BEGIN_CAPTURE,
 /* 12 : */ OP_END_CAPTURE,
-/* 13 : */ OP_INVALIDATE_ACTIVE_CAPTURES,
-/* 14 : */ OP_HALT_SUCCESSFULLY,
+/* 13 : */ OP_REENTER_INVALIDATION_SCOPE,
+/* 14 : */ OP_LEAVE_INVALIDATION_SCOPE,
+/* 15 : */ OP_HALT_SUCCESSFULLY,
 };
 
 typedef struct INSTRUCTION {
@@ -26,7 +27,6 @@ typedef struct INSTRUCTION {
     // OP_ANY,
     // OP_RETURN,
     // OP_HALT,
-    // OP_INVALIDATE_ACTIVE_CAPTURES
     //   - no data
     // OP_CHAR (not a character for ease of reading/writing)
     uint16_t instr_char;
@@ -36,9 +36,12 @@ typedef struct INSTRUCTION {
     uint16_t instr_call_addr;
     // OP_CREATE_CAPTURE_SLOTS
     uint16_t instr_n_capture_slots;
-    // OP_BEGIN_CAPTURE, OP_END_CAPTURE
+    // OP_BEGIN_CAPTURE,
+    // OP_END_CAPTURE,
+    // OP_REENTER_INVALIDATION_SCOPE,
+    // OP_LEAVE_INVALIDATION_SCOPE
     uint16_t instr_capture_slot_idx;
-    //
+    // placeholder/name for binary save/load
     uint16_t instr_union;
   };
 } INSTRUCTION;
@@ -57,6 +60,9 @@ typedef struct INSTRUCTION {
 #define I_MAKE_CAPTURE_SLOTS(n) { .instr_opcode = OP_MAKE_CAPTURE_SLOTS, .instr_n_capture_slots = (n) }
 #define I_BEGIN_CAPTURE(n) { .instr_opcode = OP_BEGIN_CAPTURE, .instr_capture_slot_idx = (n) }
 #define I_END_CAPTURE(n) { .instr_opcode = OP_END_CAPTURE, .instr_capture_slot_idx = (n) }
+#define I_REENTER_INVALIDATION_SCOPE(n) { .instr_opcode = OP_REENTER_INVALIDATION_SCOPE, .instr_capture_slot_idx = (n) }
+#define I_LEAVE_INVALIDATION_SCOPE(n) { .instr_opcode = OP_LEAVE_INVALIDATION_SCOPE, .instr_capture_slot_idx = (n) }
+
 
 enum STACKENTRY_TYPE {
   ENTRY_CALL_FRAME,
