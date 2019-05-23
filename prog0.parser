@@ -4,27 +4,29 @@
 // B => 'b'
 // C => 'c'
 S:
-    choice L0            // Try grammar rule A, branch to L0 if failure.
-    call A
-    commit End           // Nailed it.  Commit and halt with success.
+    I_CHOICE L0            // Try grammar rule A, branch to L0 if failure.
+    I_CALL A
+    I_COMMIT End           // Nailed it.  Commit and halt with success.
 L0:
-    choice L1            // Try grammar rule B, branch to L1 if failure.
-    call B
-    commit End           // Nailed it.  Commit and halt with success.
+    I_CHOICE L1            // Try grammar rule B, branch to L1 if failure.
+    I_CALL B
+    I_COMMIT End           // Nailed it.  Commit and halt with success.
 L1:
-    choice L2            // Try grammar rule C, branch to L2 if failure.
-    call C
-    commit End
+    I_CHOICE L2            // Try grammar rule C, branch to L2 if failure.
+    I_CALL C
+    I_COMMIT End
 L2:
-    fail                 // Nothing parsed.  Give up.
+    I_FAIL                 // Nothing parsed.  Give up.
 End:
-    halt-successfully
-A:                       // Grammar rule A: match single character 'a'
-    char 'a'
-    return
+    I_HALT_SUCCESSFULLY
+A:
+                           // Grammar rule A: match single character 'a'
+    I_CREATE_CAPTURE_SLOTS 2020
+    // I_CHAR 'a'
+    I_RETURN
 B:                       // Grammar rule A: match single character 'b'
-    char 'b'
-    return
+    I_CHAR 'b'
+    I_RETURN
 C:                       // Grammar rule A: match single character 'c'
-    char 'c'
-    return
+    I_CHAR 'c'
+    I_RETURN

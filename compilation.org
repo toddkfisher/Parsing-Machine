@@ -1,3 +1,4 @@
+
 * Flattening to canonical form (rules should be applied bottom-up in order shown)
 ** flatten(α | β)              → flatten(α) | flatten(β)
 ** flatten(α(β | γ))           → flatten(αβ) | flatten(αγ)
@@ -94,3 +95,24 @@
 
 Flattening rules aren't quite right.  Take this example:
 ((x|y)z)w = (xz|yz)w
+* Assember class hierarchy and macros
+** INSTRUCTION
+   generic: i-write
+   macros: simple-token-tk
+*** OPCODELESS-INSTRUCTION also parser macro: instr-w/no-arg
+**** fail
+**** halt-successfully
+**** return
+*** INSTRUCTION-w/ARG
+**** char
+**** NUMERIC ARGUMENT also parser macro: instr-w/numarg
+***** JUMP/CALL
+****** choice
+****** commit
+****** partial-commit
+***** INSTRUCTION-w/COUNT
+****** create-capture-slots
+***** run-semantica-action
+***** INSTRUCTION-w/CAPTURE-SLOT-IDX
+****** reenter-invalidation-scope
+****** leave-invalidation-scope

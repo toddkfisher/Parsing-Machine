@@ -1,0 +1,7 @@
+E => T (op:('+' | '-') T)*;
+T => F (op:('*' | '/') F)*;
+F => num:N | var:V | '(' E ')';
+N => D+;
+V => A (A | D)*;
+N => range('0' - '9');
+A => range('a' - 'z') | range('A' - 'Z')

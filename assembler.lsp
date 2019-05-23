@@ -1,43 +1,103 @@
-(defstruct I-FAIL)
-(defstruct I-HALT-SUCCESSFULLY)
-(defstruct I-END-OF-LIST)
-(defstruct I-RETURN)
-(defstruct I-CHAR char)
-(defstruct I-ANY-CHAR)
-(defstruct <I-INSTR-WITH-ADDR> addr)
-(defstruct (I-CHOICE (:include <I-INSTR-WITH-ADDR>)))
-(defstruct (I-JUMP (:include <I-INSTR-WITH-ADDR>)))
-(defstruct (I-CALL (:include <I-INSTR-WITH-ADDR>)))
-(defstruct (I-COMMIT (:include <I-INSTR-WITH-ADDR>)))
-(defstruct (I-PARTIAL-COMMIT (:include <I-INSTR-WITH-ADDR>)))
-
 (defvar *instruction-list* '())
 (defvar *label-map* (make-hash-table :test #'equal))
 (defvar *ip* 0)
+(defvar *prog* nil)
 
-;;
-;; S => A | B | C
-;; A => 'a'
-;; B => 'b'
-;; C => 'c'
-;;
-(defvar *prog* `("S: choice L0"                ;; 0000
-                 "call A"                      ;; 0001
-                 "commit End"                  ;; 0002
-                 "L0: choice L1"               ;; 0003
-                 "call B"                      ;; 0004
-                 "commit End"                  ;; 0005
-                 "L1: choice L2"               ;; 0006
-                 "call C"                      ;; 0007
-                 "commit End"                  ;; 0008
-                 "L2: fail"                    ;; 0009
-                 "End: halt-successfully"      ;; 0010
-                 "A: char 'a'"                 ;; 0011
-                 "return"                      ;; 0012
-                 "B: char 'b'"                 ;; 0013
-                 "return"                      ;; 0014
-                 "C: char 'c'"                 ;; 0015
-                 "return"))                    ;; 0016
+(eval-when (:compile-toplevel)
+  (defvar *asm-line-rule-list* nil)
+  (setf *asm-line-rule-list* nil))
+
+(defmacro simple-token-r (rule-name token-text)
+  `(defrule ,rule-name
+       (and ws*-r ,token-text ws*-r)
+     (:constant ,token-text)))
+
+(defclass I-INSTRUCTION-WITH-ADDR ()
+  ((addr :initarg addr)))
+
+(defclass I-INSTRUCTION-WITH-CAPTURE-IDX ()
+  ((capture-idx :initarg capture-idx)))
+
+(defmacro simple-instruction (string-name rule-name class-name)
+  (setf *asm-line-rule-list* (cons rule-name *asm-line-rule-list*))
+  `(progn (defclass ,class-name () ())
+          (defrule ,rule-name
+              (and ws*-r ,string-name ws*-r)
+            (:destructure (ws0 tk ws1)
+                          (make-instance (quote ,class-name))))
+          (defmethod print-object ((instr ,class-name) stream)
+            (format stream "~a" ,string-name))))
+
+(defmacro instruction-with-addr (string-name rule-name class-name)
+  (setf *asm-line-rule-list* (cons rule-name *asm-line-rule-list*))
+  `(progn (defclass ,class-name (I-INSTRUCTION-WITH-ADDR) ())
+          (defrule ,rule-name
+              (and ws*-r ,string-name ws*-r
+                   (or number-r
+                       identifier-r))
+            (:destructure (ws0 tk ws1 addr)
+                          (make-instance (quote ,class-name) 'addr addr)))
+          (defmethod print-object ((instr ,class-name) stream)
+            (format stream "~a(~a)" ,string-name (slot-value instr 'addr)))))
+
+(defmacro instruction-with-capture-idx (string-name rule-name class-name)
+  (setf *asm-line-rule-list* (cons rule-name *asm-line-rule-list*))
+  `(progn (defclass ,class-name (I-INSTRUCTION-WITH-CAPTURE-IDX) ())
+          (defrule ,rule-name
+              (and ws*-r ,string-name ws*-r
+                   number-r)
+            (:destructure (tk capidx)
+                          (make-instance (quote ,class-name) 'capture-idx)))
+          (defmethod print-object ((instr ,class-name) stream)
+            (format stream "~a(~a)" ,string-name (slot-value instr 'capture-idx)))))
+
+(simple-instruction "I_FAIL" fail-r I-FAIL)
+(simple-instruction "I_HALT_SUCCESSFULLY" halt-successfully-r I-HALT-SUCCESSFULLY)
+(simple-instruction "I_END" end-of-list-r I-END-OF-LIST-OF-LIST)
+(simple-instruction "I_RETURN" return-r I-RETURN)
+(simple-instruction "I_ANY" any-char-r I-ANY-CHAR-CHAR)
+(instruction-with-addr "I_CHOICE" choice-r I-CHOICE)
+(instruction-with-addr "I_JUMP" jump-r I-JUMP)
+(instruction-with-addr "I_CALL" call-r I-CALL)
+(instruction-with-addr "I_COMMIT" commit-r I-COMMIT)
+(instruction-with-addr "I_PARTIAL_commit" partial-commit-r I-PARTIAL-COMMIT)
+(instruction-with-capture-idx "I_BEGIN_CAPTURE" begin-capture-r  I-BEGIN-CAPTURE)
+(instruction-with-capture-idx "I_END_CAPTURE" end-capture-r I-END-CAPTURE)
+(instruction-with-capture-idx "I_LEAVE_INVALIDATION_SCOPE" leave-invalidation-scope-r
+                              I-LEAVE-INVALIDATAION-SCOPE)
+
+;; I-CHAR and I-CREATE-CAPTURE-SLOTS are two oddballs that don't fit into the
+;; macro framework above.
+(defclass I-CHAR () ((char :initarg char)))
+(eval-when (:compile-toplevel)
+  (setf *asm-line-rule-list* (cons 'char-r *asm-line-rule-list*)))
+(defrule char-r
+    (and ws*-r "I_CHAR" ws*-r "'" character "'" ws*-r)
+  (:destructure (ws0 opcode ws1 lquote ch rquote ws2)
+                (make-instance 'I-CHAR 'char ch)))
+(defmethod print-object ((instr I-CHAR) stream)
+      (format stream "I_CHAR('~a')" (slot-value instr 'char)))
+
+(defclass I-CREATE-CAPTURE-SLOTS () ((n-capture-slots :initarg n-capture-slots)))
+(eval-when (:compile-toplevel)
+  (setf *asm-line-rule-list* (cons 'create-capture-slots-r *asm-line-rule-list*)))
+(defrule create-capture-slots-r
+    (and ws*-r "I_CREATE_CAPTURE_SLOTS" ws*-r number-r ws*-r)
+  (:destructure (ws0 opcode ws1 n ws2)
+                (make-instance 'I-CREATE-CAPTURE-SLOTS 'n-capture-slots n)))
+(defmethod print-object ((instr I-CREATE-CAPTURE-SLOTS) stream)
+  (format stream "I_CREATE_CAPTURE_SLOTS(~a)" (slot-value instr 'n-capture-slots)))
+
+;; Generate rule to recognize assembler instruction lines
+(defmacro gen-instruction-line-r ()
+  `(defrule instruction-line-r
+       (and ws*-r
+            (or ,@*asm-line-rule-list*))
+     (:destructure (ws instr)
+                (setf *instruction-list* (append *instruction-list* `(,instr)))
+                (setf *ip* (1+ *ip*)))))
+
+(gen-instruction-line-r)
 
 (defun asm-file (lines)
   (if (null lines)
@@ -53,68 +113,6 @@
              (? comment-r))
         (and blank-line-r
              (? comment-r))))
-
-(defrule instruction-line-r
-    (and ws*-r
-         (or fail-r
-             halt-successfully-r
-             return-r
-             any-char-r
-             choice-r
-             jump-r
-             call-r
-             commit-r
-             char-r
-             partial-commit-r))
-  (:destructure (ws instr)
-                (setf *instruction-list* (append *instruction-list* `(,instr)))
-                (setf *ip* (1+ *ip*))))
-
-(defrule fail-r
-    "fail"
-  (:constant (make-I-FAIL)))
-
-(defrule halt-successfully-r
-    "halt-successfully"
-  (:constant (make-I-HALT-SUCCESSFULLY)))
-
-(defrule return-r
-    "return"
-  (:constant (make-I-RETURN)))
-
-(defrule char-r
-    (and "char" ws*-r "'" character "'")
-  (:destructure (opcode ws0 lquote ch rquote)
-                (make-I-CHAR :char ch)))
-
-(defrule any-char-r
-    "any-char"
-  (:constant (make-I-ANY-CHAR)))
-
-(defrule jump-r
-    (and "jump" ws*-r address-r)
-  (:destructure (opcode ws addr)
-                (make-I-JUMP :addr addr)))
-
-(defrule call-r
-    (and "call" ws*-r address-r)
-  (:destructure (opcode ws addr)
-                (make-I-CALL :addr addr)))
-
-(defrule choice-r
-    (and "choice" ws*-r address-r)
-  (:destructure (opcode ws addr)
-                (make-I-CHOICE :addr addr)))
-
-(defrule commit-r
-    (and "commit" ws*-r address-r)
-  (:destructure (opcode ws addr)
-                (make-I-COMMIT :addr addr)))
-
-(defrule partial-commit-r
-    (and "partial-commit" ws*-r address-r)
-  (:destructure (opcode ws addr)
-                (make-I-PARTIAL-COMMIT :addr addr)))
 
 (defrule number-r
     (and ws*-r
@@ -169,55 +167,32 @@
   (loop for line in *prog* do
        (parse 'asm-line-r line)))
 
-(defun fill-address (instr ip)
-  (let ((addr (<I-INSTR-WITH-ADDR>-addr instr)))
-    ;; (format t "(type-of ~A) = ~A~%" addr (type-of addr))
+(defgeneric fill-address (instr ip))
+
+(defmethod fill-address ((instr t) ip))
+
+(defmethod fill-address ((instr I-INSTRUCTION-WITH-ADDR) ip)
+  (let ((addr (slot-value instr 'addr)))
     (typecase addr
       (string
        (let ((num-addr (gethash addr *label-map*)))
          (if (null num-addr)
-             (format t "~A : label not found.~%" addr)
-             (setf (<I-INSTR-WITH-ADDR>-addr instr) num-addr))))
-      (number
-       (setf (<I-INSTR-WITH-ADDR>-addr instr) (+ ip addr))))))
+             (format t "~a : label not found.~%" addr)
+             (setf (slot-value instr 'addr) num-addr))))
+      (number  ;; unrelativeize - i don't think this is ever used.
+       (setf (slot-value instr 'addr) (+ ip addr))))))
 
 (defun pass1 ()
   (setf *ip* 0)
   (loop for instr in *instruction-list* do
-       (typecase instr
-         (I-CHOICE (fill-address instr *ip*))
-         (I-JUMP (fill-address instr *ip*))
-         (I-CALL (fill-address instr *ip*))
-         (I-COMMIT (fill-address instr *ip*))
-         (I-PARTIAL-COMMIT (fill-address instr *ip*)))
+       (fill-address instr *ip*)
        (setf *ip* (1+ *ip*))))
 
 (defun pass2 ()
   (setf *ip* 0)
-  (with-open-file (outf "prog.h" :direction :output :if-exists :overwrite)
+  (with-open-file (outf "prog.h" :direction :output :if-exists :supersede)
     (loop for instr in *instruction-list* do
-         (format outf "/* ~4,'0d : */  " *ip*)
-         (typecase instr
-           (I-FAIL
-            (format outf "I_FAIL,~%"))
-           (I-HALT-SUCCESSFULLY
-            (format outf "I_HALT_SUCCESSFULLY,~%"))
-           (I-RETURN
-            (format outf "I_RETURN,~%"))
-           (I-CHAR
-            (format outf "I_CHAR('~A'),~%" (I-CHAR-char instr)))
-           (I-ANY-CHAR
-            (format outf "I_ANY,~%"))
-           (I-CHOICE
-            (format outf "I_CHOICE(~A),~%" (I-CHOICE-addr instr)))
-           (I-JUMP
-            (format outf "I_JUMP(~A),~%" (I-JUMP-addr instr)))
-           (I-CALL
-            (format outf "I_CALL(~A),~%" (I-CALL-addr instr)))
-           (I-COMMIT
-            (format outf "I_COMMIT(~A),~%" (I-COMMIT-addr instr)))
-           (I-PARTIAL-COMMIT
-            (format outf "I_PARTIAL_COMMIT(~A),~%" (I-PARTIAL-COMMIT-addr instr))))
+         (format outf "/* ~4,'0d : */  ~a~%" *ip* instr)
          (setf *ip* (1+ *ip*)))))
 
 (defun get-file (fname)

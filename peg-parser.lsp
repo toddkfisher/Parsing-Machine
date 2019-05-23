@@ -8,6 +8,7 @@
 (defstruct ND-1-OR-MANY :expr)
 (defstruct ND-NOT :expr)
 (defstruct ND-TEXT :text)
+(defstruct ND-RANGE :begin-char :end-char)
 (defstruct ND-CALL-RULE :rule-name)
 (defstruct ND-REENTER-INVALIDATION-SCOPE :capture-names :expr)
 (defstruct ND-LEAVE-INVALIDATION-SCOPE :capture-names :expr)
@@ -31,18 +32,31 @@
 (simple-token-r zero-or-many-tk "*")
 (simple-token-r one-or-many-tk "+")
 (simple-token-r not-tk "!")
+(simple-token-r range-tk "range")
+(simple-token-r dash-tk "-")
+(simple-token-r quote-tk "'")
 
 (defrule grammar-r
     (and rule-r (? (and semicolon-tk grammar-r)))
   (:destructure (first-rule semicolon-other-rules*)
                 (cons first-rule (cadr semicolon-other-rules*))))
 
+;; (defrule expression-r
+;;     (and term-r (? (and ordered-choice-op-tk expression-r)))
+;;   (:destructure (term oc-op-expr)
+;;                 (if oc-op-expr
+;;                     (make-ND-ORDERED-CHOICE :left term
+;;                                             :right (cadr oc-op-expr))
+;;                     term)))
+
 (defrule expression-r
-    (and term-r (? (and ordered-choice-op-tk expression-r)))
-  (:destructure (term oc-op-expr)
-                (if oc-op-expr
-                    (make-ND-ORDERED-CHOICE :left term
-                                            :right (cadr oc-op-expr))
+    (and term-r (* (and ordered-choice-op-tk term-r)))
+  (:destructure (term oc-op-expr*)
+                (if oc-op-expr*
+                    (reduce (lambda (l r) (make-ND-ORDERED-CHOICE :left l :right r))
+                            (mapcar (lambda (x) (cadr x))
+                                    oc-op-expr*)
+                            :initial-value term)
                     term)))
 
 (defrule term-r
@@ -95,13 +109,26 @@
 
 (defrule simple-factor-r
     (or text-r
+        range-r
         call-r
         paren-expr-r)
   (:identity t))
 
-(defrule test-rule-r
-    (+ text-r )
-  (:identity t))
+;;
+;; Syntax: "range" "(" ch "-" ch ")"
+(defrule range-r
+    (and range-tk
+         lparen-tk
+         quote-tk
+         character
+         quote-tk
+         dash-tk
+         quote-tk
+         character
+         quote-tk
+         rparen-tk)
+  (:destructure (kw lp q0 begin-ch q1 dash q2 end-ch q3 rp)
+                (make-ND-RANGE :begin-char begin-ch :end-char end-ch)))
 
 (defrule semantic-action-char-r
     (and (and (! "%}")
@@ -146,12 +173,10 @@
                 (text ch*)))
 
 (defrule text-r
-    (and ws*-r
-         #\'
+    (and quote-tk
          string-with-escapes-r
-         #\'
-         ws*-r)
-  (:destructure (ws0 l-quote str r-quote ws1)
+         quote-tk)
+  (:destructure (l-quote str r-quote)
                 (make-ND-TEXT :text (text str))))
 
 (defrule rule-r
@@ -183,11 +208,52 @@
 (defmacro add-instruction (instruction-list-name single-instr)
   `(setf ,instruction-list-name (append ,instruction-list-name (list ,single-instr))))
 
-(defmacro add-multiple-instructions (instruction-list-name instruction-list-to-add)
+`(defmacro add-multiple-instructions (instruction-list-name instruction-list-to-add)
   `(setf ,instruction-list-name (append ,() instruction-list-to-add)))
 
 (defvar *instruction-list* nil)
 (defvar *label-idx* 0)
+
+(defun find-duplicates (L &key (test #'equal))
+  (if (null L)
+      nil
+      (let ((1st (car L))
+            (the-rest (cdr L)))
+        (if (member 1st the-rest :test test)
+            (let ((new-L (remove 1st the-rest :test test)))
+              (cons 1st (find-duplicates new-L :test test)))
+            (find-duplicates the-rest :test test)))))
+
+(defun collect-capture-names (root)
+  (if (null root)
+      nil
+  (typecase root
+    (ND-ORDERED-CHOICE
+     (append (collect-capture-names (ND-ORDERED-CHOICE-left root))
+             (collect-capture-names (ND-ORDERED-CHOICE-right root))))
+    (ND-RULE
+     (collect-capture-names (ND-RULE-expr root)))
+    (ND-NAME nil)
+    (ND-CONCAT
+     (append (collect-capture-names (ND-CONCAT-left root))
+             (collect-capture-names (ND-CONCAT-right root))))
+    (ND-CAPTURE
+     (append (list (ND-CAPTURE-capture-name root))
+             (collect-capture-names (ND-CAPTURE-capture-expr root))))
+    (ND-0-OR-1
+     (collect-capture-names (ND-0-OR-1-expr root)))
+    (ND-0-OR-MANY
+     (collect-capture-names (ND-0-OR-MANY-expr root)))
+    (ND-1-OR-MANY
+     (collect-capture-names (ND-1-OR-MANY-expr root)))
+    (ND-NOT
+     (collect-capture-names (ND-NOT-expr root)))
+    (ND-TEXT nil)
+    (ND-CALL-RULE nil)
+    (ND-REENTER-INVALIDATION-SCOPE
+     (collect-capture-names (ND-REENTER-INVALIDATION-SCOPE-expr root)))
+    (ND-LEAVE-INVALIDATION-SCOPE
+     (collect-capture-names (ND-LEAVE-INVALIDATION-SCOPE-expr root))))))
 
 (defun init-compile ()
   (setf *instruction-list* nil)
@@ -204,7 +270,8 @@
                        (value (cadar vars-value*)))
                    (if (null (cdr vars-value*))
                        `(multiple-value-bind ,var-list ,value ,@body)
-                       `(multiple-value-bind ,var-list ,value ,(expand-mv-bindings (cdr vars-value*))))))))
+                       `(multiple-value-bind ,var-list ,value ,(expand-mv-bindings
+                                                                (cdr vars-value*))))))))
     (expand-mv-bindings vars-value*)))
 
 (defun add-invalidation-scopes (root active-capture-names)
@@ -212,41 +279,49 @@
       (typecase root
         (ND-ORDERED-CHOICE ;;
          ;;
-         ;; (0) Every capture currently in invalidation scope has that scope suspended on the
-         ;;     left branch of an ordered choice.  Active captures do not get passed down
-         ;;     the left branch.  Active captures do get passed to the right branch since failure of the
-         ;;     right branch means that there are no more alternatives and hence, the entire ordered choice
-         ;;     expression has failed.
-         ;; (1) The captures introduced on the left branch do not have an invalidation scope on
-         ;;     the right branch of ordered choice.
+         ;; (0) Every capture currently  in invalidation scope has that scope  suspended on the left
+         ;;     branch  of an  ordered choice.   Active captures  do not  get passed  down the  left
+         ;;     branch.  Active  captures do  get passed to  the right branch  since failure  of the
+         ;;     right branch means that there are no more alternatives and hence, the entire ordered
+         ;;     choice expression has failed.
+         ;;
+         ;; (1) The captures introduced on the left branch  do not have an invalidation scope on the
+         ;;     right branch of ordered choice.
          ;;
          (vlet* (((left-root left-branch-capture-set)
                   (add-invalidation-scopes (ND-ORDERED-CHOICE-left root) nil))
                  ((right-root new-capture-set)
                   (add-invalidation-scopes (ND-ORDERED-CHOICE-right root) active-capture-names)))
-                (let ((new-left-root (make-ND-LEAVE-INVALIDATION-SCOPE :capture-names active-capture-names
-                                                                       :expr left-root))
-                      (new-right-root (make-ND-REENTER-INVALIDATION-SCOPE :capture-names active-capture-names
-                                                                          :expr right-root)))
+                (let ((new-left-root (make-ND-LEAVE-INVALIDATION-SCOPE
+                                      :capture-names active-capture-names
+                                      :expr left-root))
+                      (new-right-root (make-ND-REENTER-INVALIDATION-SCOPE
+                                       :capture-names active-capture-names
+                                       :expr right-root)))
                   (make-ND-ORDERED-CHOICE :left new-left-root
                                           :right new-right-root))))
-        (ND-RULE ;;
-         (values root
-                 (add-invalidation-scopes (ND-RULE-expr root)
-                                          active-capture-names)))
+        (ND-RULE
+         (vlet* (((new-expr capture-set) (add-invalidation-scopes (ND-RULE-expr root)
+                                                                  active-capture-names)))
+                (setf (ND-RULE-expr root) new-expr)
+                (values root capture-set)))
         (ND-NAME ;;
          (values root
                  active-capture-names))
         (ND-CONCAT ;;
          ;;
          ;; (0) Captures currently within invalidation scope are passed down the left branch.
-         ;; (1) New captures may enter the current scope from the left branch so we will
-         ;;     receive a (possibly) expanded set of capture names.
+         ;;
+         ;; (1) New captures may  enter the current scope from the left branch  so we will receive a
+         ;;     (possibly) expanded set of capture names.
+         ;;
          ;; (2) We also receive a new (possibly modified) ldft branch of this operator.
-         ;; (3) The new capture set from (1) is passed to the right branch and we also receive a (possibly)
-         ;;     even new capture set.
-         ;; (4) We join the new left and right branches with a 'concat' opertor and pass the newly created concat node and
-         ;;     newer capture set back up to the caller.
+         ;;
+         ;; (3) The new  capture set from (1)  is passed to the  right branch and we  also receive a
+         ;;     (possibly) even new capture set.
+         ;;
+         ;; (4) We join the  new left and right branches with a 'concat'  opertor and pass the newly
+         ;;     created concat node and newer capture set back up to the caller.
          ;;
          (vlet* (((new-left new-capture-set)
                   (add-invalidation-scopes (ND-CONCAT-left root) active-capture-names))
@@ -257,10 +332,13 @@
         (ND-CAPTURE ;;
          (let ((new-capture-set (adjoin (ND-CAPTURE-capture-name root)
                                         active-capture-names)))
+           (format nil "new-capture-set = ~a~%" new-capture-set)
            ;;
-           ;; (0) After adding the new capture name to the current capture set, we pass the new set down to the
-           ;;     expression being captured.
+           ;; (0) After adding the new capture name to  the current capture set, we pass the new set
+           ;;     down to the expression being captured.
+           ;;
            ;; (1) We receive a (possibly) enlarged capture set and a (possibly) modified expression.
+           ;;
            ;; (2) Join the capture name and new capture expression with a capture node.
            ;;
            (vlet* (((new-capture-expr newer-capture-set)
@@ -270,13 +348,13 @@
                           newer-capture-set))))
         (ND-0-OR-1  ;;
          ;;
-         ;; '<expr>?' never invalidates any captures.  Only new captures introduced in <expr> can be invalidated.
-         ;; Therefore, we pass nothing to the expression subordinate to '?'  However, <expr> may introduce new
-         ;; capture names into the invalidation scope so we need to pick those up so that they get passed to
-         ;; the right branch.
+         ;; '<expr>?' never invalidates any captures.  Only new captures introduced in <expr> can be
+         ;; invalidated.  Therefore, we pass nothing to  the expression subordinate to '?'  However,
+         ;; <expr> may introduce  new capture names into  the invalidation scope so we  need to pick
+         ;; those up so that they get passed to the right branch.
          ;;
          (vlet* (((new-expr new-capture-set)
-                  (add-invalidation-scopes (make-ND-0-OR-1-expr :expr root) nil)))
+                  (add-invalidation-scopes (ND-0-OR-1-expr root) nil)))
                 (values (make-ND-0-OR-1 :expr new-expr)
                         new-capture-set)))
         (ND-0-OR-MANY  ;; a* = (| a | aa | aaa | aaaa | ... )
@@ -284,18 +362,19 @@
          ;; The situation with ND-0-OR-MANY is exactly equivalent to ND-0-OR-1
          ;;
          (vlet* (((new-expr new-capture-set)
-                  (add-invalidation-scopes (make-ND-0-OR-1-expr :expr root) nil)))
+                  (add-invalidation-scopes (ND-0-OR-MANY-expr root) nil)))
                 (values (make-ND-0-OR-1 :expr new-expr)
                         new-capture-set)))
         (ND-1-OR-MANY ;;
          ;;
-         ;; In 'a+', 'a' must always succeed at least once and therefore it can invalidate any
-         ;; currently active captures.  And, any captures introduced can also be invalidated
-         ;; further down the line.
+         ;; In 'a+',  'a' must  always succeed  at least once  and therefore  it can  invalidate any
+         ;; currently active captures.  And, any captures introduced can also be invalidated further
+         ;; down the line.
          ;;
          (vlet* (((new-expr new-capture-set)
                   (add-invalidation-scopes (ND-1-OR-MANY-expr root) active-capture-names)))
-                (make-ND-1-OR-MANY :expr (add-invalidation-scopes new-expr new-capture-set))))
+                (values (make-ND-1-OR-MANY :expr (add-invalidation-scopes new-expr new-capture-set))
+                        new-capture-set)))
         (ND-NOT
          (values root active-capture-names))
         (ND-TEXT
@@ -307,65 +386,91 @@
         (ND-LEAVE-INVALIDATION-SCOPE ;; Shouldn't happen
          (values root active-capture-names)))))
 
-(defun peg-compile (root)
-  (let ((instruction-list nil))
-    (if root
-        (typecase root
-          (ND-CAPTURE
-           (add-instruction *instruction-list* (format nil "begin-capture ~a" (ND-CAPTURE-capture-name root)))
-           (peg-compile (ND-CAPTURE-capture-expr root))
-           (add-instruction *instruction-list* (format nil "end-capture ~a" (ND-CAPTURE-capture-name root))))
-          (ND-REENTER-INVALIDATION-SCOPE
-           (loop for capture-name in (ND-REENTER-INVALIDATION-SCOPE-capture-names root)
-              do (add-instruction *instruction-list* (format nil "reenter-invalidation-scope ~a" capture-name)))
-           (peg-compile (ND-REENTER-INVALIDATION-SCOPE-expr root)))
-          (ND-LEAVE-INVALIDATION-SCOPE
-           (loop for capture-name in (ND-LEAVE-INVALIDATION-SCOPE-capture-names root)
-              do (add-instruction *instruction-list* (format nil "leave-invalidation-scope ~a" capture-name)))
-           (peg-compile (ND-LEAVE-INVALIDATION-SCOPE-expr root)))
-          (ND-CONCAT
-           (progn (peg-compile (ND-CONCAT-left root))
-                  (peg-compile (ND-CONCAT-right root))))
-          (ND-CALL-RULE
-           (add-instruction *instruction-list* (format nil "call ~a" (ND-CALL-RULE-rule-name root))))
-          (ND-TEXT
-           (do ((i 0 (+ i 1))
-                (txt (ND-TEXT-text root))
-                (len (length (ND-TEXT-text root))))
-               ((>= i len))
-             (add-instruction *instruction-list* (format nil "char '~a'" (elt txt i)))))
-          (ND-RULE
-           (progn
-             (add-instruction *instruction-list* (format nil "~a:  // Rule" (ND-RULE-name root)))
-             (peg-compile (ND-RULE-expr root))))
-          (ND-ORDERED-CHOICE
-           (let ((L0 (new-label))
-                 (L1 (new-label)))
-             (add-instruction *instruction-list* (format nil "choice ~a" L0))
-             (peg-compile (ND-ORDERED-CHOICE-left root))
-             (add-instruction *instruction-list* (format nil "commit ~a" L1))
-             (add-instruction *instruction-list* (format nil "~a:" L0))
-             (peg-compile (ND-ORDERED-CHOICE-right root))
-             (add-instruction *instruction-list* (format nil "~a:" L1))))
-          (ND-0-OR-MANY
-           (let ((L0 (new-label))
-                 (L1 (new-label)))
-             (add-instruction *instruction-list* (format nil "choice ~a" L0))
-             (add-instruction *instruction-list* (format nil "~a:" L1))
-             (peg-compile (ND-0-OR-MANY-expr root))
-             (add-instruction *instruction-list* (format nil "partial-commit ~a" L1))
-             (add-instruction *instruction-list* (format nil "~a:" L0))))
-          (ND-0-OR-1
-           (let ((L (new-label)))
-             (add-instruction *instruction-list* (format nil "choice ~a" L))
-             (peg-compile (ND-0-OR-1-expr root))
-             (add-instruction *instruction-list* (format nil "commit ~a" L))
-             (add-instruction *instruction-list* (format nil "~a:" L))))
-          (ND-1-OR-MANY
-           (let ((L0 (new-label))
-                 (L1 (new-label)))
-             (add-instruction *instruction-list* (format nil "~a:" L0))
-             (peg-compile (ND-1-OR-MANY-expr root))
-             (add-instruction *instruction-list* (format nil "choice ~a" L1))
-             (add-instruction *instruction-list* (format nil "partial-comit ~a" L0))
-             (add-instruction *instruction-list* (format nil "~a:" L1))))))))
+(defun peg-compile-grammar (rule-list)
+  (init-compile)
+  (loop for rule in rule-list
+     do (let ((rule-with-invalidation-scopes (add-invalidation-scopes rule nil)))
+          (peg-compile rule-with-invalidation-scopes nil)))
+  *instruction-list*)
+;;
+;; This function compiles rules only. Grammars are simply lists of rules.
+;; Top-level compile function is 'peg-compile-grammar'
+;;
+(defun peg-compile (root capture-names)
+  (if root
+      (typecase root
+        (ND-CAPTURE
+         (let ((capture-slot-idx (position (ND-CAPTURE-capture-name root)
+                                           capture-names :test #'string-equal)))
+           (add-instruction *instruction-list* (format nil "begin-capture ~a" capture-slot-idx))
+           (peg-compile (ND-CAPTURE-capture-expr root) capture-names)
+           (add-instruction *instruction-list* (format nil "end-capture ~a" capture-slot-idx))))
+        (ND-REENTER-INVALIDATION-SCOPE
+         (format t "ND-REENTER-INVALIDATION-SCOPE-capture-names = ~a~%"
+                 (ND-REENTER-INVALIDATION-SCOPE-capture-names root))
+         (loop for capture-name in (ND-REENTER-INVALIDATION-SCOPE-capture-names root)
+            do (let ((capture-slot-idx (position capture-name capture-names :test #'string-equal)))
+                 (add-instruction *instruction-list* (format nil "reenter-invalidation-scope ~a"
+                                                             capture-slot-idx))))
+         (peg-compile (ND-REENTER-INVALIDATION-SCOPE-expr root) capture-names))
+        (ND-LEAVE-INVALIDATION-SCOPE
+         (format t "ND-LEAVE-INVALIDATION-SCOPE-capture-names = ~a~%"
+                 (ND-LEAVE-INVALIDATION-SCOPE-capture-names root))
+         (loop for capture-name in (ND-LEAVE-INVALIDATION-SCOPE-capture-names root)
+            do (let ((capture-slot-idx (position capture-name capture-names :test #'string-equal)))
+                 (add-instruction *instruction-list* (format nil "leave-invalidation-scope ~a"
+                                                             capture-slot-idx))))
+         (peg-compile (ND-LEAVE-INVALIDATION-SCOPE-expr root) capture-names))
+        (ND-CONCAT
+         (progn (peg-compile (ND-CONCAT-left root) capture-names)
+                (peg-compile (ND-CONCAT-right root) capture-names)))
+        (ND-CALL-RULE
+         (add-instruction *instruction-list* (format nil "call ~a" (ND-CALL-RULE-rule-name root))))
+        (ND-TEXT
+         (do ((i 0 (+ i 1))
+              (txt (ND-TEXT-text root))
+              (len (length (ND-TEXT-text root))))
+             ((>= i len))
+           (add-instruction *instruction-list* (format nil "char '~a'" (elt txt i)))))
+        (ND-RULE
+         (progn
+           (add-instruction *instruction-list* (format nil "~a:  // Rule" (ND-RULE-name root)))
+           (let* ((new-capture-names (collect-capture-names root))
+                  (duplicate-names (find-duplicates capture-names :test #'string-equal)))
+             (if duplicate-names
+                 (error (format nil "Rule ~a has duplicate captures: ~a" (ND-RULE-name root)
+                                duplicate-names))
+                 (progn (add-instruction *instruction-list* (format nil "create-capture-slots ~a"
+                                                                    (length new-capture-names)))
+                        (peg-compile (ND-RULE-expr root) new-capture-names))))))
+        (ND-ORDERED-CHOICE
+         (let ((L0 (new-label))
+               (L1 (new-label)))
+           (add-instruction *instruction-list* (format nil "choice ~a" L0))
+           (peg-compile (ND-ORDERED-CHOICE-left root) capture-names)
+           (add-instruction *instruction-list* (format nil "commit ~a" L1))
+           (add-instruction *instruction-list* (format nil "~a:" L0))
+           (peg-compile (ND-ORDERED-CHOICE-right root) capture-names)
+           (add-instruction *instruction-list* (format nil "~a:" L1))))
+        (ND-0-OR-MANY
+         (let ((L0 (new-label))
+               (L1 (new-label)))
+           (add-instruction *instruction-list* (format nil "choice ~a" L0))
+           (add-instruction *instruction-list* (format nil "~a:" L1))
+           (peg-compile (ND-0-OR-MANY-expr root) capture-names)
+           (add-instruction *instruction-list* (format nil "partial-commit ~a" L1))
+           (add-instruction *instruction-list* (format nil "~a:" L0))))
+        (ND-0-OR-1
+         (let ((L (new-label)))
+           (add-instruction *instruction-list* (format nil "choice ~a" L))
+           (peg-compile (ND-0-OR-1-expr root) capture-names)
+           (add-instruction *instruction-list* (format nil "commit ~a" L))
+           (add-instruction *instruction-list* (format nil "~a:" L))))
+        (ND-1-OR-MANY
+         (let ((L0 (new-label))
+               (L1 (new-label)))
+           (add-instruction *instruction-list* (format nil "~a:" L0))
+           (peg-compile (ND-1-OR-MANY-expr root) capture-names)
+           (add-instruction *instruction-list* (format nil "choice ~a" L1))
+           (add-instruction *instruction-list* (format nil "partial-comit ~a" L0))
+           (add-instruction *instruction-list* (format nil "~a:" L1)))))))

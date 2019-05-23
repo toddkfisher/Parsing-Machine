@@ -21,16 +21,19 @@ char *instruction_names[] = {
   /* 07 : */ "OP_RETURN",
   /* 08 : */ "OP_COMMIT",
   /* 09 : */ "OP_PARTIAL_COMMIT",
-  /* 10 : */ "OP_MAKE_CAPTURE_SLOTS",
-  /* 11 : */ "OP_BEGIN_CAPTURE",
-  /* 12 : */ "OP_END_CAPTURE",
-  /* 13 : */ "OP_INVALIDATE_ACTIVE_CAPTURES",
-  /* 14 : */ "OP_HALT_SUCCESSFULLY",
+  /* 10 : */ "OP_BEGIN_CAPTURE",
+  /* 11 : */ "OP_END_CAPTURE",
+  /* 12 : */ "OP_REENTER_INVALIDATION_SCOPE",
+  /* 13 : */ "OP_LEAVE_INVALIDATION_SCOPE",
+  /* 14 : */ "OP_RUN_SEMANTIC_ACTION",
+  /* 15 : */ "OP_CREATE_CAPTURE_SLOTS",
+  /* 15 : */ "OP_HALT_SUCCESSFULLY",
 };
 
 /// Save/load
 
-#define BUFFER_SIZE (sizeof(INSTRUCTION)*1024)  // in bytes - must be a multiple of sizeof(INSTRUCTION);
+// BUFFER_SIZE is in bytes - must be a multiple of sizeof(INSTRUCTION);
+#define BUFFER_SIZE (sizeof(INSTRUCTION)*1024)
 #define BUFFER_MAX_INSTUCTIONS (BUFFER_SIZE/sizeof(INSTRUCTION))
 
 void io_write_instructions_to_file(char *file_name, INSTRUCTION *prog, int n_instructions)
@@ -100,18 +103,24 @@ int io_read_instructions_from_file(char *file_name, INSTRUCTION *prog, int n_max
 
 /// Stack
 
-void stk_push_return_addr(MACHINE *mp, int addr)
+STACKENTRY *stk_push_call_frame(MACHINE *mp, int addr)
 {
-  mp->machine_ret_stack[mp->machine_stk_ptr].stkent_type = ENTRY_CALL_FRAME;
-  mp->machine_ret_stack[mp->machine_stk_ptr].stkent_return_addr = addr;
+  STACKENTRY *pentry = mp->machine_ret_stack + mp->machine_stk_ptr;
+  pentry->stkent_type = ENTRY_CALL_FRAME;
+  pentry->stkent_return_addr = addr;
+  pentry->stkent_n_captures = 0;
+  pentry->stkent_capture_list = NULL;
+  pentry->stkent_prev_call_frame = mp->machine_top_call_frame;
   mp->machine_stk_ptr += 1;
+  return pentry;
 }
 
 void stk_push_backtrack_entry(MACHINE *mp, int addr, char *tp)
 {
-  mp->machine_ret_stack[mp->machine_stk_ptr].stkent_type = ENTRY_BACKTRACK;
-  mp->machine_ret_stack[mp->machine_stk_ptr].stkent_backtrack_addr = addr;
-  mp->machine_ret_stack[mp->machine_stk_ptr].stkent_backtrack_tp = tp;
+  STACKENTRY *pentry = mp->machine_ret_stack + mp->machine_stk_ptr;
+  pentry->stkent_type = ENTRY_BACKTRACK;
+  pentry->stkent_backtrack_addr = addr;
+  pentry->stkent_backtrack_tp = tp;
   mp->machine_stk_ptr += 1;
 }
 
@@ -120,16 +129,15 @@ void stk_pop(MACHINE *mp, STACKENTRY *e)
   memcpy(e, &mp->machine_ret_stack[--(mp->machine_stk_ptr)], sizeof(STACKENTRY));
 }
 
-int stk_topentry_type(MACHINE *mp)
-{
-  return mp->machine_ret_stack[mp->machine_stk_ptr - 1].stkent_type;
-}
+#define STK_TOPENTRY(mp) ((mp)->machine_ret_stack + ((mp)->machine_stk_ptr - 1))
+
+#define STK_TOPENTRY_TYPE(mp) (STK_TOPENTRY(mp)->stkent_type)
 
 void stk_change_backtrack_tp(MACHINE *mp, char *new_tp)
 {
   if (mp->machine_stk_ptr <= 0) {
     exec_flag_halt(mp, H_FATAL, "Stack is empty. (stk_change_backtrack_tp()).");
-  } else if (ENTRY_BACKTRACK != stk_topentry_type(mp)) {
+  } else if (ENTRY_BACKTRACK != STK_TOPENTRY_TYPE(mp)) {
     exec_flag_halt(mp, H_FATAL, "Topmost stack entry is not type ENTRY_BACKTRACK (stk_change_backtrack_tp()).");
   } else {
     mp->machine_ret_stack[mp->machine_stk_ptr - 1].stkent_backtrack_tp = new_tp;
@@ -142,17 +150,35 @@ void print_instruction(int ip, INSTRUCTION *pinstr)
 {
   printf("%04d : %-25s ", ip, instruction_names[pinstr->instr_opcode]);
   switch (pinstr->instr_opcode) {
-    case OP_COMMIT:
-    case OP_CHOICE:
-    case OP_JUMP:
-    case OP_PARTIAL_COMMIT:
-      printf("%04d", pinstr->instr_jump_addr);
-      break;
-    case OP_CALL:
-      printf("%04d", pinstr->instr_call_addr);
+    case OP_END_OF_LIST:
+    case OP_FAIL:
+    case OP_ANY:
+    case OP_RETURN:
+    case OP_HALT_SUCCESSFULLY:
       break;
     case OP_CHAR:
-      printf("'%c'", pinstr->instr_char);
+      printf("char = '%c'", (char) pinstr->instr_char);
+      break;
+    case OP_CHOICE:
+    case OP_COMMIT:
+    case OP_JUMP:
+    case OP_PARTIAL_COMMIT:
+      printf("junp_addr = %04d", pinstr->instr_addr);
+      break;
+    case OP_CALL:
+      printf("call_addr = %04d", pinstr->instr_addr);
+      break;
+    case OP_BEGIN_CAPTURE:
+    case OP_END_CAPTURE:
+    case OP_REENTER_INVALIDATION_SCOPE:
+    case OP_LEAVE_INVALIDATION_SCOPE:
+      printf("capture_slot_idx = %d", pinstr->instr_capture_slot_idx);
+      break;
+    case OP_RUN_SEMANTIC_ACTION:
+      printf("semantic_action_num = %d", pinstr->instr_semantic_action_num);
+      break;
+    case OP_CREATE_CAPTURE_SLOTS:
+      printf("n_capture_slots = %d", pinstr->instr_n_capture_slots);
       break;
   }
   printf("\n");
@@ -163,15 +189,24 @@ void print_stackentry(int stkptr, STACKENTRY *e)
   printf("%03d : ", stkptr);
   switch (e->stkent_type) {
     case ENTRY_BACKTRACK:
-      printf("Backtrack addr   = %04d, ", e->stkent_backtrack_addr);
-      printf("Backtrack to text: ");
+      printf("ENTRY_BACKTRACK\n");
+      printf("  backtrack_addr = %04d\n", e->stkent_backtrack_addr);
+      printf("  backtrack_tp   =\"");
       print_summary_string(e->stkent_backtrack_tp, 4);
-      printf("\n");
+      printf("\"\n");
       break;
-    case ENTRY_CALL_FRAME:
-      printf("Ret addr: %04d", e->stkent_return_addr);
-      printf("\n");
+    case ENTRY_CALL_FRAME: {
+      int i;
+      printf("ENTRY_CALL_FRAME, memory address %p:\n", e);
+      printf("  return_addr     = %04d\n", e->stkent_return_addr);
+      printf("  n_captures      = %d\n", e->stkent_n_captures);
+      printf("  prev_call_frame = %p\n", e->stkent_prev_call_frame);
+      printf("  capture_list:\n");
+      for (i = 0; i < e->stkent_n_captures; ++i) {
+        //print_capture_slot(4, e->stkent_capture_list + i);
+      }
       break;
+    }
     default:
       break;
   }
@@ -214,6 +249,7 @@ MACHINE *m_new_machine(INSTRUCTION *prog)
   mp->machine_tp = NULL;
   mp->machine_target_text = NULL;
   mp->machine_halt = 0;
+  mp->machine_top_call_frame = NULL;
   mp->machine_halt_code = -1;
   strcpy(mp->machine_halt_message, "");
   return mp;
@@ -227,14 +263,18 @@ void m_set_target_text(MACHINE *mp, char *target_text)
 
 void exec_fail_backtrack(MACHINE *mp)
 {
-  STACKENTRY e;
-  while (mp->machine_stk_ptr && ENTRY_CALL_FRAME == stk_topentry_type(mp)) {
+  STACKENTRY *pstkentry;
+  STACKENTRY stkentry;
+  while (mp->machine_stk_ptr && ENTRY_CALL_FRAME == STK_TOPENTRY_TYPE(mp)) {
+    pstkentry = STK_TOPENTRY(mp);
+    mp->machine_top_call_frame = pstkentry->stkent_prev_call_frame;
+    free(pstkentry->stkent_capture_list);
     mp->machine_stk_ptr -= 1;
   }
   if (mp->machine_stk_ptr) {
-    stk_pop(mp, &e);
-    mp->machine_tp = e.stkent_backtrack_tp;
-    mp->machine_ip = e.stkent_backtrack_addr;
+    stk_pop(mp, &stkentry);
+    mp->machine_tp = stkentry.stkent_backtrack_tp;
+    mp->machine_ip = stkentry.stkent_backtrack_addr;
   } else {
     exec_flag_halt(mp, H_PARSE_FAILED, "Parse failed.\n");
   }
@@ -261,11 +301,12 @@ void exec_flag_halt(MACHINE *mp, int halt_code, char *halt_message)
 
 void exec_run(MACHINE *mp, int run_mode, int print_flags)
 {
+  INSTRUCTION *pinstr = mp->machine_prog + mp->machine_ip;
   mp->machine_halt = 0;
   while (!mp->machine_halt) {
     printf("%04d : ", mp->machine_ip);
-    print_instruction(mp->machine_ip, mp->machine_prog + mp->machine_ip);
-    switch (mp->machine_prog[mp->machine_ip].instr_opcode) {
+    print_instruction(mp->machine_ip, pinstr);
+    switch (pinstr->instr_opcode) {
       case OP_END_OF_LIST:
         exec_flag_halt(mp, H_FATAL, "End of instruction list (?).");
         return;
@@ -274,7 +315,7 @@ void exec_run(MACHINE *mp, int run_mode, int print_flags)
         exec_fail_backtrack(mp);
         break;
       case OP_CHAR:
-        if (!exec_test_char(mp, mp->machine_prog[mp->machine_ip].instr_char)) {
+        if (!exec_test_char(mp, pinstr->instr_char)) {
           exec_fail_backtrack(mp);
         } else {
           mp->machine_ip += 1;
@@ -290,15 +331,15 @@ void exec_run(MACHINE *mp, int run_mode, int print_flags)
         }
         break;
       case OP_CHOICE:
-        stk_push_backtrack_entry(mp, mp->machine_prog[mp->machine_ip].instr_jump_addr, mp->machine_tp);
+        stk_push_backtrack_entry(mp, pinstr->instr_addr, mp->machine_tp);
         mp->machine_ip += 1;
         break;
       case OP_JUMP:
-        mp->machine_ip = mp->machine_prog[mp->machine_ip].instr_jump_addr;
+        mp->machine_ip = pinstr->instr_addr;
         break;
       case OP_CALL:
-        stk_push_return_addr(mp, mp->machine_ip + 1);
-        mp->machine_ip = mp->machine_prog[mp->machine_ip].instr_call_addr;
+        mp->machine_top_call_frame = stk_push_call_frame(mp, mp->machine_ip + 1);
+        mp->machine_ip = pinstr->instr_addr;
         break;
       case OP_RETURN: {
         STACKENTRY e;
@@ -320,14 +361,43 @@ void exec_run(MACHINE *mp, int run_mode, int print_flags)
           exec_flag_halt(mp, H_FATAL, "Topmost stack entry is not type ENTRY_BACKTRACK on "
                          "execution of OP_COMMIT.\n");
         } else {
-          mp->machine_ip = mp->machine_prog[mp->machine_ip].instr_jump_addr;
+          mp->machine_ip = pinstr->instr_addr;
         }
         break;
       }
       case OP_PARTIAL_COMMIT:
         stk_change_backtrack_tp(mp, mp->machine_tp);
-        mp->machine_ip = mp->machine_prog[mp->machine_ip].instr_jump_addr;
+        mp->machine_ip = pinstr->instr_addr;
         break;
+      case OP_CREATE_CAPTURE_SLOTS:
+      {
+        STACKENTRY *pentry = STK_TOPENTRY(mp);
+        if (NULL == (pentry->stkent_capture_list =
+                     (CAPTURE_SLOT *) malloc(sizeof(CAPTURE_SLOT)*pentry->stkent_n_captures))) {
+          exec_flag_halt(mp, H_FATAL, "Memory overflow on OP_CREATE_CAPTURE_SLOTS.\n");
+        } else {
+          int i;
+          int n_capture_slots = pinstr->instr_n_capture_slots;
+          CAPTURE_SLOT *pslot = pentry->stkent_capture_list;
+          for (pslot = pentry->stkent_capture_list; n_capture_slots; --n_capture_slots) {
+            pslot->capture_is_valid = 0;
+            // capture_name isn't used just yet.
+            pslot->capture_name = NULL;
+            pslot->capture_beginning_of_text = NULL;
+            pslot->capture_end_of_text = NULL;
+            pslot->capture_n_semantic_values = 0;
+          }
+          break;
+        }
+      }
+      case OP_REENTER_INVALIDATION_SCOPE:
+      case OP_LEAVE_INVALIDATION_SCOPE:
+      {
+        STACKENTRY *pentry = STK_TOPENTRY(mp);
+        int cs_idx = pinstr->instr_capture_slot_idx;
+        pentry->stkent_capture_list[cs_idx].capture_is_valid = (OP_REENTER_INVALIDATION_SCOPE == pinstr->instr_opcode);
+        break;
+      }
       case OP_HALT_SUCCESSFULLY:
         if (!*mp->machine_tp) {
           exec_flag_halt(mp, H_SUCCESS, "Successful parse.\n");
