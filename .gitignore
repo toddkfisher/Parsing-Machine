@@ -10,3 +10,6 @@ prog.h
 \#*#
 .#*
 junk.txt
+test.*
+*.pmb
+macros.el

@@ -1,0 +1,8 @@
+* Commands
+** {b}reak (address|label)
+   This will require some sort of symbol table to be loaded
+** {st}op
+** {p}rint (stack [n]|prog [n]|target (n,m|tp))
+** {re}start
+** {r}un
+**

@@ -1,0 +1,3 @@
+* Compile and link switches
+  link: -ldl
+  compile: -fPIC

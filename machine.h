@@ -1,24 +1,25 @@
 #pragma once
 
-enum OPCODE {
-  OP_END_OF_LIST,
-  OP_FAIL,
-  OP_CHAR,
-  OP_ANY,
-  OP_CHOICE,
-  OP_JUMP,
-  OP_CALL,
-  OP_RETURN,
-  OP_COMMIT,
-  OP_PARTIAL_COMMIT,
-  OP_BEGIN_CAPTURE,
-  OP_END_CAPTURE,
-  OP_REENTER_INVALIDATION_SCOPE,
-  OP_LEAVE_INVALIDATION_SCOPE,
-  OP_RUN_SEMANTIC_ACTION,
-  OP_CREATE_CAPTURE_SLOTS,
-  OP_HALT_SUCCESSFULLY,
-};
+#define OP_END_OF_LIST 0
+#define OP_FAIL 1
+#define OP_CHAR 2
+#define OP_ANY 3
+#define OP_CHOICE 4
+#define OP_JUMP 5
+#define OP_CALL 6
+#define OP_RETURN 7
+#define OP_COMMIT 8
+#define OP_PARTIAL_COMMIT 9
+#define OP_BEGIN_CAPTURE 10
+#define OP_END_CAPTURE 11
+#define OP_REENTER_INVALIDATION_SCOPE 12
+#define OP_LEAVE_INVALIDATION_SCOPE 13
+#define OP_RUN_SEMANTIC_ACTION 14
+#define OP_CREATE_CAPTURE_SLOTS 15
+#define OP_RANGE 16
+#define OP_HALT_SUCCESSFULLY 17
+
+#define OPCODE_NAME_AT_IDX(opcode) [(opcode)] = #opcode
 
 typedef struct INSTRUCTION {
   // Opcode tag for union.
@@ -42,6 +43,11 @@ typedef struct INSTRUCTION {
     uint16_t instr_capture_slot_idx;
     // OP_RUN_SEMANTIC_ACTION
     uint16_t instr_semantic_action_num;
+    // OP_RANGE
+    struct {
+      char instr_begin_char;
+      char instr_end_char;
+    };
     // placeholder/name for binary save/load
     uint16_t instr_union;
   };
@@ -112,12 +118,39 @@ enum HALT_CODE {
   H_FATAL
 };
 
+#define SYMBOL_MAX 32
+
+typedef struct SYMBOL {
+  char sym_name[SYMBOL_MAX];
+  uint16_t sym_addr;
+} SYMBOL;
+
+#define SYMTAB_MAX 1024
+
+typedef struct SYMBOL_TABLE {
+  uint16_t stbl_n_symbols;
+  // Entries are sorted lexicographically, in ASCII order.
+  SYMBOL stbl_entries[];
+} SYMBOL_TABLE;
+
+typedef struct WATCHLIST_ENTRY {
+  uint16_t swl_address;
+  uint16_t swl_symtab_idx;
+} WATCHLIST_ENTRY;
+
+typedef struct SYMBOL_WATCHLIST {
+  uint16_t swl_n_on_watchlist;
+  // Entries are sorted numerically.
+  WATCHLIST_ENTRY *swl_entries;
+}
+
 #define HALT_MESSAGE_MAX 1024
 
 // Parsing machine state.  Bundled into a struct so "programs" (arrays of INSTRUCTIONS) are
 // re-entrant.
 typedef struct MACHINE {
   // Program being executed.
+  unsigned machine_prog_size;
   INSTRUCTION *machine_prog;
   // Topmost call frame.
   STACKENTRY *machine_top_call_frame;
@@ -136,12 +169,41 @@ typedef struct MACHINE {
   int machine_halt_code;
   // Message to print just before stopping.
   char machine_halt_message[HALT_MESSAGE_MAX];
+  // Name of dll/shared lib containing code for semantic actions.
+  char machine_semantic_action_lib_name[PATH_MAX];
+  // Handle to dll/shared lib named above.
+  void *machine_semantic_action_dlhandle;
+  // Entry point to semantic action shared lib.
+  SEMANIC_ACTION_EXEC_FN machine_SA_exec_fn;
+  // Symbol table and watchlist (for debugging a parser).
+  SYMBOL_TABLE *machine_symtab;
+  SYMBOL_WATCHLIST machine_watchlist;
 } MACHINE;
 
+//
+//   | bit | use                 |
+//   |-----+---------------------|
+//   |   0 | printing flag       |
+//   |   1 | printing flag       |
+//   |   2 | printing flag       |
+//   |   3 | printing flag       |
+//   |   4 | printing flag       |
+//   |   5 | 0th order bit for # |
+//   |   6 | 1st order bit for # |
+//   |   7 | 2nd order bit for # |
+//
 enum PRINT_MACHINE_STATE_FLAGS {
   P_RET_STACK = 0x01,
-  P_INSTRUCTION = 0x02
+  P_INSTRUCTION = 0x04,
+  P_MAX = 0x10
 };
+
+// Example use: SET_PRINT_FLAGS_NUM(P_RET_STACK_TOP_N, 3)
+// to indicate that only the top three entries of the return stack should be printed.
+// Note: 0 <= n <= 7.
+// n == 0 is an implied "all" or "none" depending on the context.
+#define SET_PRINT_FLAGS_NUM(flags, n) ((flags) | (((n) & 0x07) << 5)
+#define GET_PRINT_FLAGS_NUM(flags) (((flags) & (0x07 << 5)) >> 5)
 
 enum RUN_MODE {
   RMODE_UNINTERRUPTED,

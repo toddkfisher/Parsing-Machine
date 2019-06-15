@@ -4,124 +4,83 @@
 // N => D D*
 // D => '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'
 
-        call E
-        halt-successfully
+        I_CALL E
+        I_HALT_SUCCESSFULLY
 
 //--------------------------------------------------------------------------------
 // E => T (('+' | '-') T)*
 E:
-        call T
+        I_CALL T
 E_L4:
-        choice E_L0
+        I_CHOICE E_L0
 E_L5:
-        choice E_L1
-        char '+'
-        commit E_L2
+        I_CHOICE E_L1
+        I_CHAR '+'
+        I_COMMIT E_L2
 E_L1:
-        choice E_L3
-        char '-'
-        commit E_L2
+        I_CHOICE E_L3
+        I_CHAR '-'
+        I_COMMIT E_L2
 E_L2:
-        call T
-        partial-commit E_L5
+        I_CALL T
+        I_PARTIAL_COMMIT E_L5
 E_L3:
-        fail
+        I_FAIL
 E_L0:
-        return
+        I_RETURN
 
 //--------------------------------------------------------------------------------
 // T => F (('*' | '/') F)*
 T:
-        call F
+        I_CALL F
 T_L4:
-        choice T_L0
+        I_CHOICE T_L0
 T_L5:
-        choice T_L1
-        char '*'
-        commit T_L2
+        I_CHOICE T_L1
+        I_CHAR '*'
+        I_COMMIT T_L2
 T_L1:
-        choice T_L3
-        char '/'
-        commit T_L2
+        I_CHOICE T_L3
+        I_CHAR '/'
+        I_COMMIT T_L2
 T_L2:
-        call F
-        partial-commit T_L5
+        I_CALL F
+        I_PARTIAL_COMMIT T_L5
 T_L3:
-        fail
+        I_FAIL
 T_L0:
-        return
+        I_RETURN
 
 //--------------------------------------------------------------------------------
 // F => '(' E ')' | N
 F:
-        choice F_0
-        char '('
-        call E
-        char ')'
-        commit F_1
+        I_CHOICE F_0
+        I_CHAR '('
+        I_CALL E
+        I_CHAR ')'
+        I_COMMIT F_1
 F_0:
-        choice F_2
-        call N
-        commit F_1
+        I_CHOICE F_2
+        I_CALL N
+        I_COMMIT F_1
 F_2:
-        fail
+        I_FAIL
 F_1:
-        return
+        I_RETURN
 
 //--------------------------------------------------------------------------------
 // N => D D*
 N:
-        call D
-        choice N_0
+        I_CALL D
+        I_CHOICE N_0
 N_1:
-        call D
-        partial-commit N_1
+        I_CALL D
+        I_PARTIAL_COMMIT N_1
 N_0:
-        return
+        I_RETURN
 
 //--------------------------------------------------------------------------------
-// D => '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'
+// D => range('0', '9')
 D:
-        choice D_0
-        char '0'
-        commit D_1
-D_0:
-        choice D_2
-        char '1'
-        commit D_1
-D_2:
-        choice D_3
-        char '2'
-        commit D_1
-D_3:
-        choice D_4
-        char '3'
-        commit D_1
-D_4:
-        choice D_5
-        char '4'
-        commit D_1
-D_5:
-        choice D_6
-        char '5'
-        commit D_1
-D_6:
-        choice D_7
-        char '6'
-        commit D_1
-D_7:
-        choice D_8
-        char '7'
-        commit D_1
-D_8:
-        choice D_9
-        char '8'
-        commit D_1
-D_9:
-        choice D_10
-        char '9'
-        commit D_1
-D_10:
-        fail
-D_1:
-        return
+        I_RANGE '0', '9'
+        I_RETURN

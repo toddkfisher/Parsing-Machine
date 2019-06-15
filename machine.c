@@ -11,95 +11,26 @@
 #include "prototypes.h"
 
 char *instruction_names[] = {
-  /* 00 : */ "OP_END_OF_LIST",
-  /* 01 : */ "OP_FAIL",
-  /* 02 : */ "OP_CHAR",
-  /* 03 : */ "OP_ANY",
-  /* 04 : */ "OP_CHOICE",
-  /* 05 : */ "OP_JUMP",
-  /* 06 : */ "OP_CALL",
-  /* 07 : */ "OP_RETURN",
-  /* 08 : */ "OP_COMMIT",
-  /* 09 : */ "OP_PARTIAL_COMMIT",
-  /* 10 : */ "OP_BEGIN_CAPTURE",
-  /* 11 : */ "OP_END_CAPTURE",
-  /* 12 : */ "OP_REENTER_INVALIDATION_SCOPE",
-  /* 13 : */ "OP_LEAVE_INVALIDATION_SCOPE",
-  /* 14 : */ "OP_RUN_SEMANTIC_ACTION",
-  /* 15 : */ "OP_CREATE_CAPTURE_SLOTS",
-  /* 15 : */ "OP_HALT_SUCCESSFULLY",
+  OPCODE_NAME_AT_IDX(OP_END_OF_LIST),
+  OPCODE_NAME_AT_IDX(OP_FAIL),
+  OPCODE_NAME_AT_IDX(OP_CHAR),
+  OPCODE_NAME_AT_IDX(OP_ANY),
+  OPCODE_NAME_AT_IDX(OP_CHOICE),
+  OPCODE_NAME_AT_IDX(OP_JUMP),
+  OPCODE_NAME_AT_IDX(OP_CALL),
+  OPCODE_NAME_AT_IDX(OP_RETURN),
+  OPCODE_NAME_AT_IDX(OP_COMMIT),
+  OPCODE_NAME_AT_IDX(OP_PARTIAL_COMMIT),
+  OPCODE_NAME_AT_IDX(OP_BEGIN_CAPTURE),
+  OPCODE_NAME_AT_IDX(OP_END_CAPTURE),
+  OPCODE_NAME_AT_IDX(OP_REENTER_INVALIDATION_SCOPE),
+  OPCODE_NAME_AT_IDX(OP_LEAVE_INVALIDATION_SCOPE),
+  OPCODE_NAME_AT_IDX(OP_RUN_SEMANTIC_ACTION),
+  OPCODE_NAME_AT_IDX(OP_CREATE_CAPTURE_SLOTS),
+  OPCODE_NAME_AT_IDX(OP_RANGE),
+  OPCODE_NAME_AT_IDX(OP_HALT_SUCCESSFULLY),
 };
 
-/// Save/load
-
-// BUFFER_SIZE is in bytes - must be a multiple of sizeof(INSTRUCTION);
-#define BUFFER_SIZE (sizeof(INSTRUCTION)*1024)
-#define BUFFER_MAX_INSTUCTIONS (BUFFER_SIZE/sizeof(INSTRUCTION))
-
-void io_write_instructions_to_file(char *file_name, INSTRUCTION *prog, int n_instructions)
-{
-  uint8_t output_buffer[BUFFER_SIZE];
-  INSTRUCTION output_instruction;
-  int buff_idx;
-  int ip;
-  FILE *fout = fopen(file_name, "wb");
-  if (NULL == fout) {
-    fprintf(stderr, "Failed to open '%s' for writing.\n", file_name);
-    exit(0);
-  }
-  for (ip = 0, buff_idx = 0; ip < n_instructions; ++ip) {
-    //print_instruction(&prog[ip]);
-    output_instruction.instr_opcode = htole16(prog[ip].instr_opcode);
-    output_instruction.instr_union = htole16(prog[ip].instr_union);
-    memcpy(&output_buffer[buff_idx], &output_instruction, sizeof(INSTRUCTION));
-    buff_idx += sizeof(INSTRUCTION);
-    if (buff_idx >= BUFFER_SIZE || ip + 1 >= n_instructions) {
-      if (!fwrite(output_buffer, sizeof(uint8_t), buff_idx, fout)) {
-        fprintf(stderr, "Write error to '%s'.\n", file_name);
-        exit(0);
-      }
-      buff_idx = 0;
-    }
-  }
-  fclose(fout);
-}
-
-int io_read_instructions_from_file(char *file_name, INSTRUCTION *prog, int n_max_instructions)
-{
-  FILE *fin;
-  int n_instructions_to_read;
-  int n_instructions_in_file;
-  int ip;
-  INSTRUCTION *input_instruction_list;
-  struct stat statbuf;
-  off_t file_size_bytes;
-  if (-1 == stat(file_name, &statbuf)) {
-    fprintf(stderr, "Error getting file size of '%s'.\n", file_name);
-    exit(0);
-  }
-  file_size_bytes = statbuf.st_size;
-  if (0 != file_size_bytes % sizeof(INSTRUCTION)) {
-    fprintf(stderr, "Error : file size of '%s' is not a multiple of instruction size.\n", file_name);
-    exit(0);
-  }
-  n_instructions_in_file = file_size_bytes/sizeof(INSTRUCTION);
-  n_instructions_to_read = MIN(n_max_instructions, n_instructions_in_file);
-  if (NULL == (fin = fopen(file_name, "rb"))) {
-    fprintf(stderr, "Unable to open file '%s' for reading.\n", file_name);
-    exit(0);
-  }
-  if (n_instructions_to_read != fread(prog, sizeof(INSTRUCTION), n_instructions_to_read, fin)) {
-    fprintf(stderr, "Error reading instruction list (count mismatch) on file '%s'.\n", file_name);
-    fclose(fin);
-    exit(0);
-  }
-  fclose(fin);
-  for (ip = 0; ip < n_instructions_to_read; ++ip, ++prog) {
-    prog->instr_opcode = le16toh(prog->instr_opcode);
-    prog->instr_union = le16toh(prog->instr_union);
-  }
-  return n_instructions_to_read;
-}
 
 /// Stack
 
@@ -146,9 +77,9 @@ void stk_change_backtrack_tp(MACHINE *mp, char *new_tp)
 
 /// Printing
 
-void print_instruction(int ip, INSTRUCTION *pinstr)
+void print_instruction(int ip, INSTRUCTION *pinstr, int is_current_instruction)
 {
-  printf("%04d : %-25s ", ip, instruction_names[pinstr->instr_opcode]);
+  printf("%c%4d : %-22s ", is_current_instruction ? '*' : ' ', ip, instruction_names[pinstr->instr_opcode]);
   switch (pinstr->instr_opcode) {
     case OP_END_OF_LIST:
     case OP_FAIL:
@@ -157,28 +88,26 @@ void print_instruction(int ip, INSTRUCTION *pinstr)
     case OP_HALT_SUCCESSFULLY:
       break;
     case OP_CHAR:
-      printf("char = '%c'", (char) pinstr->instr_char);
+      printf("'%c'", (char) pinstr->instr_char);
       break;
     case OP_CHOICE:
     case OP_COMMIT:
     case OP_JUMP:
     case OP_PARTIAL_COMMIT:
-      printf("junp_addr = %04d", pinstr->instr_addr);
-      break;
     case OP_CALL:
-      printf("call_addr = %04d", pinstr->instr_addr);
+      printf("%4d", pinstr->instr_addr);
       break;
     case OP_BEGIN_CAPTURE:
     case OP_END_CAPTURE:
     case OP_REENTER_INVALIDATION_SCOPE:
     case OP_LEAVE_INVALIDATION_SCOPE:
-      printf("capture_slot_idx = %d", pinstr->instr_capture_slot_idx);
+      printf("%d", pinstr->instr_capture_slot_idx);
       break;
     case OP_RUN_SEMANTIC_ACTION:
-      printf("semantic_action_num = %d", pinstr->instr_semantic_action_num);
+      printf("%d", pinstr->instr_semantic_action_num);
       break;
     case OP_CREATE_CAPTURE_SLOTS:
-      printf("n_capture_slots = %d", pinstr->instr_n_capture_slots);
+      printf("%d", pinstr->instr_n_capture_slots);
       break;
   }
   printf("\n");
@@ -215,25 +144,32 @@ void print_stackentry(int stkptr, STACKENTRY *e)
 void print_machine_state(MACHINE *mp, int print_flags)
 {
   int sp;
+  int n;
   if (P_INSTRUCTION & print_flags) {
-    printf("ip = %04d\n", mp->machine_ip);
-    print_instruction(mp->machine_ip, &mp->machine_prog[mp->machine_ip]);
+    n = GET_PRINT_FLAGS_NUM(flags);
+    for (k = MAX(ip - n, 0); k <= MIN(ip + n, mp->machine_prog_size - 1); ++k) {
+      print_instruction(mp->machine_ip, &mp->machine_prog[mp->machine_ip], ip == k);
+    }
   }
   if (P_RET_STACK & print_flags) {
-    for (sp = mp->machine_stk_ptr; sp; --sp) {
+    n = GET_PRINT_FLAGS_NUM(flags);
+    for (sp = mp->machine_stk_ptr; n && sp; --sp) {
       print_stackentry(sp, &(mp->machine_ret_stack[sp - 1]));
       if (sp) {
         printf("----------------\n");
       }
     }
+    if (sp) {
+      printf("And %d more below ... \n", sp);
+    }
   }
 }
 
-void print_all_instructions(INSTRUCTION *pinst, int n_instructions)
+void print_all_instructions(INSTRUCTION *pinst)
 {
   int ip;
-  for (ip = 0; ip < n_instructions; ++ip) {
-    print_instruction(ip, pinst++);
+  for (ip = 0; OP_END_OF_LIST != pinst->instr_opcode; ++ip) {
+    print_instruction(ip, pinst++, 0);
   }
 }
 
@@ -244,6 +180,7 @@ MACHINE *m_new_machine(INSTRUCTION *prog)
   MACHINE *mp = (MACHINE *) malloc(sizeof(MACHINE));
   zero_mem(mp, sizeof(MACHINE));
   mp->machine_prog = prog;
+  mp->machine_prog_size = prog_size(prog);
   mp->machine_ip = 0;
   mp->machine_stk_ptr = 0;
   mp->machine_tp = NULL;
@@ -283,12 +220,25 @@ void exec_fail_backtrack(MACHINE *mp)
 // Note: c == 0 --> match any single character.
 int exec_test_char(MACHINE *mp, char c)
 {
+
   if (!*mp->machine_tp) {
     return 0;
   } else if (!c) {
     return 1;
   } else {
     return c == *mp->machine_tp;
+  }
+}
+
+int exec_test_range(MACHINE *mp, char begin_char, char end_char)
+{
+  if (!*mp->machine_tp) {
+    return 0;
+  } if (begin_char > end_char) {
+    // Empty set --> always fail.
+    return 0;
+  } else {
+    return *mp->machine_tp >= begin_char, *mp->machine_tp <= end_char;
   }
 }
 
@@ -304,9 +254,9 @@ void exec_run(MACHINE *mp, int run_mode, int print_flags)
   INSTRUCTION *pinstr = mp->machine_prog + mp->machine_ip;
   mp->machine_halt = 0;
   while (!mp->machine_halt) {
-    printf("%04d : ", mp->machine_ip);
-    print_instruction(mp->machine_ip, pinstr);
     switch (pinstr->instr_opcode) {
+      // LEFT OFF HERE
+      // if debugging, then issue a debugger prompt, read and parse command
       case OP_END_OF_LIST:
         exec_flag_halt(mp, H_FATAL, "End of instruction list (?).");
         return;
@@ -324,6 +274,14 @@ void exec_run(MACHINE *mp, int run_mode, int print_flags)
         break;
       case OP_ANY:
         if (!exec_test_char(mp, '\0')) {
+          exec_fail_backtrack(mp);
+        } else {
+          mp->machine_ip += 1;
+          mp->machine_tp += 1;
+        }
+        break;
+      case OP_RANGE:
+        if (!exec_test_range(mp, pinstr->instr_begin_char, pinstr->instr_end_char)) {
           exec_fail_backtrack(mp);
         } else {
           mp->machine_ip += 1;

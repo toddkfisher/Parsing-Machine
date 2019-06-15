@@ -67,7 +67,6 @@
         choice L0
         (compile expr)
         commit L1
-
    L1:
         fail
    L0:
@@ -90,11 +89,7 @@
         choice L1
         partial-commit L0
    L1:
-
-
-
-Flattening rules aren't quite right.  Take this example:
-((x|y)z)w = (xz|yz)w
+** (compile (ND-
 * Assember class hierarchy and macros
 ** INSTRUCTION
    generic: i-write
