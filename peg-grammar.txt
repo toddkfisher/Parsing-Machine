@@ -4,5 +4,5 @@ Expression           <- Term ('|' Term)*
 Semantic_Action      <- '%{' Semantic_Action_Text '%}'
 Term                 <- Factor Factor*
 Factor               <- Capture? '!'? Simple_Factor ('?' | '*' | '+')?
-Simple_Factor        <- Quote Text Quote | '(' Expression ')'
+Simple_Factor        <- Quote Text Quote | '(' Expression ')' | '.'
 Semantic_Action_Text <- (Character | '%%}' | '%%{')*
