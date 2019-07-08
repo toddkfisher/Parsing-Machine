@@ -253,6 +253,31 @@
   (:destructure (ws0 first-char rest-chars ws1)
                 (text first-char rest-chars)))
 
+(defun combine-rule-exprs (rule-name rule-expr-list)
+  (make-instance 'ND-RULE
+                 'name rule-name
+                 'expr (reduce (lambda (x y) (make-instance 'ND-ORDERED-CHOICE
+                                                            'left-arg x
+                                                            'right-arg y))
+                               rule-expr-list
+                               :from-end t)))
+
+(defun combine-rules-with-same-name (rule-list)
+  (let ((rule-name-to-rule-exprs-table (make-hash-table :test #'equal)))
+    (dolist (rule rule-list)
+      (let* ((rule-name (slot-value rule 'name))
+             (rule-expr-list (gethash rule-name rule-name-to-rule-exprs-table 'NOT-FOUND)))
+        (if (eq rule-expr-list 'NOT-FOUND)
+            (setf (gethash rule-name rule-name-to-rule-exprs-table)
+                  `(,(slot-value rule 'expr)))
+            (setf (gethash rule-name rule-name-to-rule-exprs-table)
+                  (append rule-expr-list `(,(slot-value rule 'expr)))))))
+    (maphash (lambda (rule-name rule-expr-list)
+               (setf (gethash rule-name rule-name-to-rule-exprs-table)
+                     (combine-rule-exprs rule-name rule-expr-list)))
+             rule-name-to-rule-exprs-table)
+    (alexandria:hash-table-values rule-name-to-rule-exprs-table)))
+
 (defmacro add-instruction (instruction-list-name single-instr)
   `(setf ,instruction-list-name (append ,instruction-list-name (list ,single-instr))))
 
@@ -564,7 +589,7 @@
          (right-arg-id (slot-value nd-right-arg 'id))
          (namelist (slot-value nd 'names-in-invalidation-scope))
          (tail-dot-string (concatenate 'string (make-string-copies "}" (+ 2 (length namelist)))
-                                       "\"];~%"))
+                                       (format nil "\"];~%")))
          (head-dot-string (format nil "~a [shape=record, label=\"{~a|{<left>left|<right>right|" nd-id nd-label))
          (namelist-dot-string (string-join namelist :separator "|{")))
     (concatenate 'string head-dot-string namelist-dot-string tail-dot-string
@@ -573,6 +598,16 @@
 
 (defmethod gv-node-string ((nd ND-TEXT))
   (format nil "~a [shape=record label=\"'~a'\"];~%" (slot-value nd 'id) (slot-value nd 'text)))
+
+(defmethod gv-node-string ((nd ND-RULE))
+  (let ((nd-id (slot-value nd 'id))
+        (nd-label (slot-value nd 'label)))
+    (format nil "~a [shape=record label=\"{~a|{~a|<expr>expr}}\"];~%~a:expr -> ~a~%"
+            nd-id
+            nd-label
+            (slot-value nd 'name)
+            nd-id
+            (slot-value (slot-value nd 'expr) 'id))))
 
 (defmethod gv-node-string ((nd ND-CAPTURE))
   (let* ((nd-id (slot-value nd 'id))
@@ -585,6 +620,9 @@
     (concatenate 'string node-str edge-str)))
 
 (defgeneric node-children (nd))
+
+(defmethod node-children ((nd ND-RULE))
+  `(,(slot-value nd 'expr)))
 
 (defmethod node-children ((nd BINARY-OPERATION-NODE))
   `(,(slot-value nd 'left-arg) ,(slot-value nd 'right-arg)))
@@ -611,3 +649,11 @@
                  (reduce (lambda (x y) (concatenate 'string x y))
                          child-string-list
                          :initial-value ""))))
+
+(defun gv-write-dot-file (root output-file-name)
+  (with-open-file (outf output-file-name
+                        :direction :output
+                        :if-exists :supersede)
+    (format outf "digraph PEGTree {~%")
+    (format outf "~a" (gv-graph-body-string root))
+    (format outf "}~%")))
